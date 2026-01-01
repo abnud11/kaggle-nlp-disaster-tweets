@@ -13,34 +13,41 @@ from transformers import (
 from transformers.trainer_utils import EvalPrediction
 from sklearn.metrics import ConfusionMatrixDisplay
 from matplotlib import pyplot as plt
-import datasets
 import evaluate
 from torch.utils.data import Dataset
 import numpy as np
 
 set_seed(850)
 
+
 def preprocess_data(df: pl.DataFrame) -> pl.DataFrame:
     # Combine keyword, location, and text
     df = df.with_columns(
-        combined_text = (
-            pl.col('keyword').fill_null('') + " " + 
-            pl.col('location').fill_null('') + " " + 
-            pl.col('text').fill_null('')
+        combined_text=(
+            pl.lit("This is a Twitter tweet") + pl.when(pl.col("keyword").fill_null("") != "")
+            .then(pl.lit(", the keyword is ") + pl.col("keyword") + pl.lit(","))
+            .otherwise(pl.lit(""))
+            + pl.lit(" ")
+            + pl.when(pl.col("location").fill_null("") != "")
+            .then(pl.lit(", it was posted by a person located at ") + pl.col("location") + pl.lit(","))
+            .otherwise(pl.lit(""))
+            + pl.lit(" ")
+            + pl.col("text").fill_null("")
         )
     )
-    
+
     # Basic preprocessing using Polars string methods
     df = df.with_columns(
-        combined_text = pl.col('combined_text')
+        combined_text=pl.col("combined_text")
         .str.to_lowercase()
-        .str.replace_all(r'http\S+|www\S+|https\S+', '') # Remove URLs
-        .str.replace_all(r'\W', ' ') # Remove non-alphanumeric
-        .str.replace_all(r'\s+', ' ') # Remove extra whitespace
+        .str.replace_all(r"http\S+|www\S+|https\S+", "")  # Remove URLs
+        .str.replace_all(r"\s+", " ")  # Remove extra whitespace
+        .str.replace_all(r"%20", " ")  # Replace URL encoded spaces
         .str.strip_chars()
     )
-    
-    return df.select(['combined_text', 'target'])
+
+    return df.select(["combined_text", "target"])
+
 
 train_data = preprocess_data(pl.read_csv("train_split.csv"))
 test_data = preprocess_data(pl.read_csv("test_split.csv"))
@@ -55,6 +62,7 @@ recall_metric = evaluate.load("recall")
 
 tran_model = "boltuix/bert-mini"
 
+
 class PolarsDataset(Dataset):
     def __init__(self, df: pl.DataFrame, tokenizer: PreTrainedTokenizer):
         self.df = df
@@ -65,12 +73,10 @@ class PolarsDataset(Dataset):
 
     def __getitem__(self, idx: int):
         row = self.df.row(idx, named=True)
-       
-        t_text = self.tokenizer(row["combined_text"], truncation=True)
-        return {
-            "input_ids": t_text["input_ids"],
-            "labels": row["target"]
-        }
+
+        t_text = self.tokenizer(row["combined_text"])
+        return {"input_ids": t_text["input_ids"], "labels": row["target"]}
+
 
 tokenizer = cast(
     PreTrainedTokenizer,
@@ -118,14 +124,13 @@ def compute_metrics(eval_pred: EvalPrediction):
     }
 
 
-
 tokenized_train_data = PolarsDataset(train_data, tokenizer)
 tokenized_test_data = PolarsDataset(test_data, tokenizer)
 data_collator = DataCollatorWithPadding(return_tensors="pt", tokenizer=tokenizer)
 id2label = {0: "Neg", 1: "Pos"}
 label2id = {"Neg": 0, "Pos": 1}
 training_args = TrainingArguments(
-    num_train_epochs=4,
+    num_train_epochs=5,
     eval_strategy="epoch",
 )
 model = cast(

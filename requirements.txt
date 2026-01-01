@@ -1,0 +1,15 @@
+--extra-index-url https://download.pytorch.org/whl/cu130
+polars[numpy]==1.36.1
+scikit-learn==1.8.0
+matplotlib==3.10.8
+nltk==3.9.2
+transformers[torch]==4.57.3
+accelerate==1.12.0
+tokenizers==0.22.1
+# add --index-url https://download.pytorch.org/whl/cuxxx based on your CUDA version 
+# or --index-url https://download.pytorch.org/whl/rocm6.4 if your system uses ROCm
+# my laptop supports CUDA 13.0
+torch==2.9.1 
+numpy==2.4.0
+evaluate==0.4.6
+datasets==4.4.2

@@ -15,14 +15,37 @@ from sklearn.metrics import ConfusionMatrixDisplay
 from matplotlib import pyplot as plt
 import datasets
 import evaluate
+from torch.utils.data import Dataset
 import numpy as np
 
 set_seed(850)
-data = datasets.load_dataset(
-    "csv", data_files={"train": "train_split.csv", "test": "test_split.csv"}
-)
-train_data = data["train"]
-test_data = data["test"]
+
+def preprocess_data(df: pl.DataFrame) -> pl.DataFrame:
+    # Combine keyword, location, and text
+    df = df.with_columns(
+        combined_text = (
+            pl.col('keyword').fill_null('') + " " + 
+            pl.col('location').fill_null('') + " " + 
+            pl.col('text').fill_null('')
+        )
+    )
+    
+    # Basic preprocessing using Polars string methods
+    df = df.with_columns(
+        combined_text = pl.col('combined_text')
+        .str.to_lowercase()
+        .str.replace_all(r'http\S+|www\S+|https\S+', '') # Remove URLs
+        .str.replace_all(r'\W', ' ') # Remove non-alphanumeric
+        .str.replace_all(r'\s+', ' ') # Remove extra whitespace
+        .str.strip_chars()
+    )
+    
+    return df.select(['combined_text', 'target'])
+
+train_data = preprocess_data(pl.read_csv("train_split.csv"))
+test_data = preprocess_data(pl.read_csv("test_split.csv"))
+
+
 accuracy = evaluate.load("accuracy")
 confusion_matrix = evaluate.load("confusion_matrix")
 roc_auc_metric = evaluate.load("roc_auc")
@@ -32,38 +55,39 @@ recall_metric = evaluate.load("recall")
 
 tran_model = "boltuix/bert-mini"
 
+class PolarsDataset(Dataset):
+    def __init__(self, df: pl.DataFrame, tokenizer: PreTrainedTokenizer):
+        self.df = df
+        self.tokenizer = tokenizer
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx: int):
+        row = self.df.row(idx, named=True)
+       
+        t_text = self.tokenizer(row["combined_text"], truncation=True)
+        return {
+            "input_ids": t_text["input_ids"],
+            "labels": row["target"]
+        }
+
 tokenizer = cast(
     PreTrainedTokenizer,
     AutoTokenizer.from_pretrained(tran_model),
 )
-def preprocess_function(examples):
-    # Handle None values by replacing them with empty strings
-    locations = [l if l is not None else "" for l in examples["location"]]
-    keywords = [k if k is not None else "" for k in examples["keyword"]]
-    
-    t_text = tokenizer(examples["text"], truncation=True, add_special_tokens=False)
-    t_location = tokenizer(locations, truncation=True, add_special_tokens=False)
-    t_keyword = tokenizer(keywords, truncation=True, add_special_tokens=False)
-    
-    batch_input_ids = []
-    for i in range(len(examples["text"])):
-        # Concatenate input_ids for each example in the batch
-        combined_ids = t_text["input_ids"][i] + t_location["input_ids"][i] + t_keyword["input_ids"][i]
-        batch_input_ids.append(tokenizer.build_inputs_with_special_tokens(combined_ids))
-        
-    return {"input_ids": batch_input_ids, "labels": examples["target"]}
 
 
 def compute_metrics(eval_pred: EvalPrediction):
     predictions = np.argmax(eval_pred.predictions, axis=1)
     labels = eval_pred.label_ids
     false_positives = [
-        test_data["text"][i]
+        test_data["combined_text"][i]
         for i, (true, pred) in enumerate(zip(labels, predictions))
         if true == 0 and pred == 1
     ]
     false_negatives = [
-        test_data["text"][i]
+        test_data["combined_text"][i]
         for i, (true, pred) in enumerate(zip(labels, predictions))
         if true == 1 and pred == 0
     ]
@@ -95,8 +119,8 @@ def compute_metrics(eval_pred: EvalPrediction):
 
 
 
-tokenized_train_data = train_data.map(preprocess_function, batched=True)
-tokenized_test_data = test_data.map(preprocess_function, batched=True)
+tokenized_train_data = PolarsDataset(train_data, tokenizer)
+tokenized_test_data = PolarsDataset(test_data, tokenizer)
 data_collator = DataCollatorWithPadding(return_tensors="pt", tokenizer=tokenizer)
 id2label = {0: "Neg", 1: "Pos"}
 label2id = {"Neg": 0, "Pos": 1}

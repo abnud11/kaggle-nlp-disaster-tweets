@@ -20,7 +20,7 @@ from torch.utils.data import Dataset
 import numpy as np
 import shap
 
-set_seed(850)
+set_seed(50)
 
 
 def preprocess_data(df: pl.DataFrame, for_training: bool = True) -> pl.DataFrame:
@@ -51,8 +51,8 @@ def preprocess_data(df: pl.DataFrame, for_training: bool = True) -> pl.DataFrame
     return df.select(["combined_text", "target"]) if for_training else df.select(["combined_text"])
 
 
-train_data = preprocess_data(pl.read_csv("train_split.csv").unique(subset=["text"]))
-test_data = preprocess_data(pl.read_csv("test_split.csv").unique(subset=["text"]))
+train_data = preprocess_data(pl.read_csv("train_split.csv"))
+test_data = preprocess_data(pl.read_csv("test_split.csv"))
 
 
 accuracy = evaluate.load("accuracy")
@@ -136,6 +136,9 @@ id2label = {0: "Neg", 1: "Pos"}
 label2id = {"Neg": 0, "Pos": 1}
 training_args = TrainingArguments(
     num_train_epochs=5,
+    save_strategy="epoch",
+    load_best_model_at_end=True,
+    metric_for_best_model="f1",
     eval_strategy="epoch",
     per_device_eval_batch_size=32,
     per_device_train_batch_size=32,
@@ -189,8 +192,19 @@ explainer = shap.Explainer(explainer_pipe)
 
 # Load false positives identified during evaluation
 fp_df = pl.read_csv("false_positives.csv")
-sample_fps = fp_df["False Positives"].to_list()
-
+sample_fps = fp_df["False Positives"].head(10).to_list()
+if sample_fps:
+    print(f"Generating SHAP values for {len(sample_fps)} false positives...")
+    shap_values = explainer(sample_fps)
+    
+    # This will render an interactive visualization in a Jupyter Notebook
+    # In a standard script, it may require saving to HTML or using a notebook cell
+    p = shap.plots.text(shap_values)
+    with open("shap_false_positives.html", "w", encoding="utf-8") as f:
+        f.write(f"<html><head>{shap.getjs()}</head><body>")
+        f.write(shap.plots.text(shap_values, display=False))
+        f.write("</body></html>")
+"""
 if sample_fps:
     print(f"Generating SHAP values for {len(sample_fps)} false positives...")
     shap_values = explainer(sample_fps)
@@ -219,10 +233,10 @@ if sample_fps:
     # تحويل النتائج لـ DataFrame وترتيبها حسب التأثير الكلي
     result_df = pl.DataFrame(summary).sort(by='total_impact', descending=True)
     result_df.write_csv("false_positive_word_contributions.csv", quote_style="always")
-
 """
 
-# Load false positives identified during evaluation
+
+# Load false negatives identified during evaluation
 fn_df = pl.read_csv("false_negatives.csv")
 sample_fns = fn_df["False Negatives"].head(10).to_list()
 
@@ -237,7 +251,7 @@ if sample_fns:
         f.write(f"<html><head>{shap.getjs()}</head><body>")
         f.write(shap.plots.text(shap_values, display=False))
         f.write("</body></html>")
-"""
+
 """
 kaggle_test_data = preprocess_data(pl.read_csv("test.csv"), for_training=False)
 kaggle_tokenized_test_data = PolarsDataset(kaggle_test_data, tokenizer)

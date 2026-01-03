@@ -51,7 +51,7 @@ def preprocess_data(df: pl.DataFrame, for_training: bool = True) -> pl.DataFrame
     return df.select(["combined_text", "target"]) if for_training else df.select(["combined_text"])
 
 
-train_data = preprocess_data(pl.read_csv("train_split.csv"))
+train_data = preprocess_data(pl.read_csv("augmented_train.csv"))
 test_data = preprocess_data(pl.read_csv("test_split.csv"))
 
 
@@ -62,7 +62,7 @@ f1_metric = evaluate.load("f1")
 precision_metric = evaluate.load("precision")
 recall_metric = evaluate.load("recall")
 
-tran_model = "microsoft/xtremedistil-l6-h256-uncased"
+tran_model = "distilbert/distilbert-base-uncased"
 
 
 class PolarsDataset(Dataset):
@@ -135,14 +135,9 @@ data_collator = DataCollatorWithPadding(return_tensors="pt", tokenizer=tokenizer
 id2label = {0: "Neg", 1: "Pos"}
 label2id = {"Neg": 0, "Pos": 1}
 training_args = TrainingArguments(
-    num_train_epochs=5,
-    save_strategy="epoch",
-    load_best_model_at_end=True,
-    metric_for_best_model="f1",
-    eval_strategy="epoch",
-    per_device_eval_batch_size=32,
-    per_device_train_batch_size=32,
-    learning_rate=8e-5,
+    num_train_epochs=1,
+    weight_decay=0.01,
+    fp16=True,
 )
 model = cast(
     PreTrainedModel,
@@ -164,6 +159,7 @@ trainer = Trainer(
 )
 
 trainer.train()
+"""
 eval_results = trainer.evaluate()
 print(f"Accuracy: {eval_results['eval_accuracy'] * 100:.2f}%")
 print(f"ROC AUC Score: {eval_results['eval_roc_auc']:.4f}")
@@ -205,6 +201,7 @@ if sample_fps:
         f.write(shap.plots.text(shap_values, display=False))
         f.write("</body></html>")
 """
+"""
 if sample_fps:
     print(f"Generating SHAP values for {len(sample_fps)} false positives...")
     shap_values = explainer(sample_fps)
@@ -234,7 +231,7 @@ if sample_fps:
     result_df = pl.DataFrame(summary).sort(by='total_impact', descending=True)
     result_df.write_csv("false_positive_word_contributions.csv", quote_style="always")
 """
-
+"""
 
 # Load false negatives identified during evaluation
 fn_df = pl.read_csv("false_negatives.csv")
@@ -260,4 +257,3 @@ kaggle_pred_labels = np.argmax(kaggle_predictions.predictions, axis=1)
 submission_df = pl.DataFrame(
     {"id": pl.read_csv("test.csv")["id"], "target": kaggle_pred_labels})
 submission_df.write_csv("submission.csv", quote_style="always")
-"""

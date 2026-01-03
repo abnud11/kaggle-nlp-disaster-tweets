@@ -1,8 +1,9 @@
 from sklearn.model_selection import train_test_split
 import polars as pl
-data = pl.read_csv("train.csv")
-
-train_data, val_data = train_test_split(data.to_pandas(), test_size=0.5, random_state=42)
+data = pl.read_csv("train.csv").unique(subset=["text"])
+print(len(data))
+train_data, val_data = train_test_split(data.to_pandas(), test_size=0.2, random_state=42)
+print(f"Train samples: {len(train_data)}")
 
 train_data.to_csv("train_split.csv", index=False)
 val_data.to_csv("test_split.csv", index=False)

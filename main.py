@@ -9,6 +9,7 @@ from transformers import (
     PreTrainedTokenizer,
     PreTrainedModel,
     set_seed,
+    pipeline,
 )
 from transformers.trainer_utils import EvalPrediction
 from sklearn.metrics import ConfusionMatrixDisplay
@@ -16,21 +17,18 @@ from matplotlib import pyplot as plt
 import evaluate
 from torch.utils.data import Dataset
 import numpy as np
+import shap
 
 set_seed(850)
 
 
-def preprocess_data(df: pl.DataFrame) -> pl.DataFrame:
+def preprocess_data(df: pl.DataFrame, for_training: bool = True) -> pl.DataFrame:
     # Combine keyword, location, and text
     df = df.with_columns(
         combined_text=(
-            pl.lit("This is a Twitter tweet") + pl.when(pl.col("keyword").fill_null("") != "")
-            .then(pl.lit(", the keyword is ") + pl.col("keyword") + pl.lit(","))
-            .otherwise(pl.lit(""))
+            pl.col("keyword").fill_null("")
             + pl.lit(" ")
-            + pl.when(pl.col("location").fill_null("") != "")
-            .then(pl.lit(", it was posted by a person located at ") + pl.col("location") + pl.lit(","))
-            .otherwise(pl.lit(""))
+            + pl.col("location").fill_null("")
             + pl.lit(" ")
             + pl.col("text").fill_null("")
         )
@@ -46,11 +44,11 @@ def preprocess_data(df: pl.DataFrame) -> pl.DataFrame:
         .str.strip_chars()
     )
 
-    return df.select(["combined_text", "target"])
+    return df.select(["combined_text", "target"]) if for_training else df.select(["combined_text"])
 
 
-train_data = preprocess_data(pl.read_csv("train_split.csv"))
-test_data = preprocess_data(pl.read_csv("test_split.csv"))
+train_data = preprocess_data(pl.read_csv("train_split.csv").unique(subset=["text"]))
+test_data = preprocess_data(pl.read_csv("test_split.csv").unique(subset=["text"]))
 
 
 accuracy = evaluate.load("accuracy")
@@ -60,7 +58,7 @@ f1_metric = evaluate.load("f1")
 precision_metric = evaluate.load("precision")
 recall_metric = evaluate.load("recall")
 
-tran_model = "boltuix/bert-mini"
+tran_model = "microsoft/xtremedistil-l6-h256-uncased"
 
 
 class PolarsDataset(Dataset):
@@ -74,8 +72,11 @@ class PolarsDataset(Dataset):
     def __getitem__(self, idx: int):
         row = self.df.row(idx, named=True)
 
-        t_text = self.tokenizer(row["combined_text"])
-        return {"input_ids": t_text["input_ids"], "labels": row["target"]}
+        t_text = self.tokenizer(row["combined_text"], truncation=True, max_length=160)
+        target = row.get("target")
+        if target is not None:
+            t_text["labels"] = row.get("target")
+        return t_text
 
 
 tokenizer = cast(
@@ -126,12 +127,15 @@ def compute_metrics(eval_pred: EvalPrediction):
 
 tokenized_train_data = PolarsDataset(train_data, tokenizer)
 tokenized_test_data = PolarsDataset(test_data, tokenizer)
-data_collator = DataCollatorWithPadding(return_tensors="pt", tokenizer=tokenizer)
+data_collator = DataCollatorWithPadding(return_tensors="pt", tokenizer=tokenizer, padding="max_length", max_length=160)
 id2label = {0: "Neg", 1: "Pos"}
 label2id = {"Neg": 0, "Pos": 1}
 training_args = TrainingArguments(
     num_train_epochs=5,
     eval_strategy="epoch",
+    per_device_eval_batch_size=32,
+    per_device_train_batch_size=32,
+    learning_rate=8e-5,
 )
 model = cast(
     PreTrainedModel,
@@ -164,3 +168,43 @@ ConfusionMatrixDisplay(
     display_labels=["Neg", "Pos"],
 ).plot()
 plt.show()
+
+
+# SHAP Explanations for False Positives
+# Create a pipeline for the explainer
+explainer_pipe = pipeline(
+    "text-classification",
+    model=model,
+    tokenizer=tokenizer,
+    top_k=None,
+    device=0 if model.device.type == "cuda" else -1,
+)
+
+# Initialize the SHAP explainer
+explainer = shap.Explainer(explainer_pipe)
+
+# Load false positives identified during evaluation
+fp_df = pl.read_csv("false_positives.csv")
+sample_fps = fp_df["False Positives"].head(10).to_list()
+
+if sample_fps:
+    print(f"Generating SHAP values for {len(sample_fps)} false positives...")
+    shap_values = explainer(sample_fps)
+    
+    # This will render an interactive visualization in a Jupyter Notebook
+    # In a standard script, it may require saving to HTML or using a notebook cell
+    p = shap.plots.text(shap_values)
+    with open("shap_false_positives.html", "w", encoding="utf-8") as f:
+        f.write(f"<html><head>{shap.getjs()}</head><body>")
+        f.write(shap.plots.text(shap_values, display=False))
+        f.write("</body></html>")
+
+"""
+kaggle_test_data = preprocess_data(pl.read_csv("test.csv"), for_training=False)
+kaggle_tokenized_test_data = PolarsDataset(kaggle_test_data, tokenizer)
+kaggle_predictions = trainer.predict(kaggle_tokenized_test_data)
+kaggle_pred_labels = np.argmax(kaggle_predictions.predictions, axis=1)
+submission_df = pl.DataFrame(
+    {"id": pl.read_csv("test.csv")["id"], "target": kaggle_pred_labels})
+submission_df.write_csv("submission.csv", quote_style="always")
+"""

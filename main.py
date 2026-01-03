@@ -1,4 +1,5 @@
-from typing import cast
+from collections import defaultdict
+from typing import Any, cast
 import polars as pl
 from transformers import (
     TrainingArguments,
@@ -41,6 +42,9 @@ def preprocess_data(df: pl.DataFrame, for_training: bool = True) -> pl.DataFrame
         .str.replace_all(r"http\S+|www\S+|https\S+", "")  # Remove URLs
         .str.replace_all(r"\s+", " ")  # Remove extra whitespace
         .str.replace_all(r"%20", " ")  # Replace URL encoded spaces
+        .str.replace_all(r"[^a-zA-Z0-9\s]", "")  # Remove special characters
+        .str.replace_all(r"@\w+", "")  # Remove mentions
+        .str.replace_all(r"\d", "")  # Remove digits
         .str.strip_chars()
     )
 
@@ -185,20 +189,55 @@ explainer = shap.Explainer(explainer_pipe)
 
 # Load false positives identified during evaluation
 fp_df = pl.read_csv("false_positives.csv")
-sample_fps = fp_df["False Positives"].head(10).to_list()
+sample_fps = fp_df["False Positives"].to_list()
 
 if sample_fps:
     print(f"Generating SHAP values for {len(sample_fps)} false positives...")
     shap_values = explainer(sample_fps)
+    word_contributions = defaultdict(list)
+    for i, val in enumerate(shap_values):
+        # val.data يحتوي على الكلمات/التوكنز
+        # val.values يحتوي على قيم SHAP المقابلة لها
+        tokens = val.data
+        scores = val.values[:, 1]
+        
+        for token, score in zip(tokens, scores):
+            token = token.strip().lower()
+            if score > 0: # نركز فقط على الكلمات التي دفعت النموذج نحو "إيجابي"
+                word_contributions[token].append(score)
+
+    # 5. تلخيص النتائج في جدول
+    summary: list[dict[str, Any]] = []
+    for token, scores in word_contributions.items():
+        summary.append({
+            'keyword': token,
+            'appearance_count': len(scores),
+            'average_impact': np.mean(scores),
+            'total_impact': np.sum(scores)
+        })
+
+    # تحويل النتائج لـ DataFrame وترتيبها حسب التأثير الكلي
+    result_df = pl.DataFrame(summary).sort(by='total_impact', descending=True)
+    result_df.write_csv("false_positive_word_contributions.csv", quote_style="always")
+
+"""
+
+# Load false positives identified during evaluation
+fn_df = pl.read_csv("false_negatives.csv")
+sample_fns = fn_df["False Negatives"].head(10).to_list()
+
+if sample_fns:
+    print(f"Generating SHAP values for {len(sample_fns)} false negatives...")
+    shap_values = explainer(sample_fns)
     
     # This will render an interactive visualization in a Jupyter Notebook
     # In a standard script, it may require saving to HTML or using a notebook cell
     p = shap.plots.text(shap_values)
-    with open("shap_false_positives.html", "w", encoding="utf-8") as f:
+    with open("shap_false_negatives.html", "w", encoding="utf-8") as f:
         f.write(f"<html><head>{shap.getjs()}</head><body>")
         f.write(shap.plots.text(shap_values, display=False))
         f.write("</body></html>")
-
+"""
 """
 kaggle_test_data = preprocess_data(pl.read_csv("test.csv"), for_training=False)
 kaggle_tokenized_test_data = PolarsDataset(kaggle_test_data, tokenizer)
